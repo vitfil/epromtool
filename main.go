@@ -15,9 +15,13 @@ var programmer *serial.Port
 
 func main() {
 	var err error
-	portFlag := flag.String("p", "", "COM port to use")
+	portFlag := flag.String("p", "", "Port name")
 	baudFlag := flag.Int("b", 115200, "Baud rate to use")
-	clearFlag := flag.Bool("c", false, "Clear the EEPROM")
+	readFlag := flag.Bool("r", false, "Read the EEPROM")
+	unlockFlag := flag.Bool("u", false, "Unlock the EEPROM before clearing or write")
+	clearFlag := flag.Bool("c", false, "Clear the EEPROM before programming")
+	writeFlag := flag.String("w", "", "Write the EEPROM with the given data")
+	lockFlag := flag.Bool("l", false, "Lock the EEPROM after clearing or write")
 	flag.Parse()
 	if *portFlag == "" {
 		flag.Usage()
@@ -57,12 +61,108 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *readFlag {
+		if err = readEEPROM(); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}
+
+	if *unlockFlag {
+		if err = unlockEEPROM(); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}
+
 	if *clearFlag {
 		if err = clearEEPROM(); err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 	}
+
+	if *writeFlag != "" {
+		if err = writeEEPROM(*writeFlag); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}
+
+	if *lockFlag {
+		if err = lockEEPROM(); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Println("\nDone.")
+}
+
+func writeEEPROM(filename string) error {
+	fmt.Println("Writing EEPROM...")
+	dat, err := os.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+
+	packet := make([]byte, 6)
+	packet[0] = '<'
+	packet[1] = 'W'
+	packet[5] = '='
+
+	pos := 0
+	for addr, data := range dat {
+		packet[2] = byte(addr >> 8)
+		packet[3] = byte(addr & 0xFF)
+		packet[4] = data
+
+		if pos == 0 {
+			fmt.Printf("\n%02x%02x: ", packet[2], packet[3])
+		}
+		if pos == 8 {
+			fmt.Print(" ")
+		}
+		fmt.Printf(" %02x", packet[4])
+		pos++
+		if pos == 16 {
+			pos = 0
+		}
+
+		if _, err = programmer.Write(packet); err != nil {
+			return err
+		}
+		err = readResponse()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func readEEPROM() error {
+	fmt.Println("Reading EEPROM...")
+	if _, err := programmer.Write([]byte("<R=")); err != nil {
+		return err
+	}
+	return readResponse()
+}
+
+func lockEEPROM() error {
+	fmt.Println("Locking EEPROM...")
+	if _, err := programmer.Write([]byte("<L=")); err != nil {
+		return err
+	}
+	return readResponse()
+}
+
+func unlockEEPROM() error {
+	fmt.Println("Unlocking EEPROM...")
+	if _, err := programmer.Write([]byte("<U=")); err != nil {
+		return err
+	}
+	return readResponse()
 }
 
 func clearEEPROM() error {
@@ -70,39 +170,7 @@ func clearEEPROM() error {
 	if _, err := programmer.Write([]byte("<C=")); err != nil {
 		return err
 	}
-	// read response
-	pos := 0
-	for {
-		bData, err := readData()
-		if err != nil {
-			return errors.New("\nError reading data: " + err.Error())
-		}
-		data := string(bData)
-		if data == "OK" {
-			break
-		} else if data == "ERROR" {
-			return errors.New("\nError clearing EEPROM")
-		}
-
-		// Incoming data format: Address:Data
-		arr := strings.Split(data, ":")
-		if len(arr) != 2 {
-			return errors.New("\nInvalid response")
-		}
-		if pos == 0 {
-			fmt.Print("\n", arr[0], ": ")
-		}
-		if pos == 8 {
-			fmt.Print(" ")
-		}
-		fmt.Print(" ", arr[1])
-		pos++
-		if pos == 16 {
-			pos = 0
-		}
-	}
-	fmt.Println("\nEEPROM cleared")
-	return nil
+	return readResponse()
 }
 
 func readData() ([]byte, error) {
@@ -148,5 +216,40 @@ func checkConnection() error {
 		return errors.New("Invalid response")
 	}
 
+	return nil
+}
+
+func readResponse() error {
+	// read response
+	pos := 0
+	for {
+		bData, err := readData()
+		if err != nil {
+			return errors.New("\nError reading data: " + err.Error())
+		}
+		data := string(bData)
+		if data == "OK" {
+			break
+		} else if data == "ERROR" {
+			return errors.New("\nOperation failed")
+		}
+
+		// Incoming data format: Address:Data
+		arr := strings.Split(data, ":")
+		if len(arr) != 2 {
+			return errors.New("\nInvalid response")
+		}
+		if pos == 0 {
+			fmt.Print("\n", arr[0], ": ")
+		}
+		if pos == 8 {
+			fmt.Print(" ")
+		}
+		fmt.Print(" ", arr[1])
+		pos++
+		if pos == 16 {
+			pos = 0
+		}
+	}
 	return nil
 }
